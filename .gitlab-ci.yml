@@ -1,0 +1,75 @@
+image: docker:stable
+
+services:
+  - docker:19
+
+variables:
+  region: us-east-1
+  bucket: cb-lambdas-dev
+  zip:    cb-arquivosgerenciaisg5.zip
+  lambda: CB_Pagar_0010_gerencialG5_dev
+
+cache:
+  paths:
+    - $zip
+
+before_script:
+    - export AWS_ACCESS_KEY_ID=$KOPS_DEV_ACCESS_KEY
+    - export AWS_SECRET_ACCESS_KEY=$KOPS_DEV_SECRET_KEY
+
+stages:
+  - build
+  - lambda_create
+  - lambda_update
+
+# BUILD - ZIP - EXPORTA BUCKET S3
+build:
+  stage: build
+  tags:
+    - runner10
+  image: alpine:3
+  before_script:
+    - apk update
+    - apk add npm zip py-pip 
+    - pip install awscli
+  script:
+    - npm install
+    - zip -r $zip *.js *.json node_modules
+    - source infra/create_bucket.sh
+    - aws s3 cp $zip s3://$bucket/$zip --sse aws:kms --region $region
+  artifacts:
+    name: build
+    paths:
+      - $zip
+
+# TERRAFORM CRIA LAMBDA NA AWS
+lambda_create:
+  stage: lambda_create
+  tags:
+    - runner10
+  image: 
+    name: hashicorp/terraform:light
+    entrypoint:
+     - '/usr/bin/env'
+     - 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+  before_script:
+    - cd infra
+    - terraform --version
+    - terraform init
+    - terraform validate
+  script:
+    - terraform plan -out plan
+    - terraform apply -input=false plan
+
+# ATUALIZA ZIP NO LAMBDA
+lambda_update:
+  stage: lambda_update
+  tags:
+    - runner10
+  image: alpine:3
+  before_script:
+    - apk update
+    - apk add py-pip 
+    - pip install awscli
+  script:
+    - aws lambda update-function-code --function-name $lambda --s3-bucket $bucket --s3-key $zip --region $region
